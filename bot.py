@@ -28,6 +28,7 @@ import deepcheck_auto as DCA
 import ledger as LG
 import odds_watch as OW
 import fetcher as FT
+import store as ST
 
 
 def log(msg):
@@ -60,6 +61,18 @@ STATE = {
     "dc_confirm": {},
     "fixtures_cache": {},
 }
+
+_persisted = ST.load_state({})
+if _persisted:
+    STATE["matches"] = _persisted.get("matches", [])
+    STATE["matches_ts"] = _persisted.get("matches_ts", 0.0)
+    STATE["matches_src"] = _persisted.get("matches_src", "none")
+    STATE["dc_confirm"] = _persisted.get("dc_confirm", {})
+    STATE["issues"] = _persisted.get("issues", [])
+    log(f"✅ حافظهٔ دائم بازیابی شد: {len(STATE['matches'])} بازی")
+else:
+    log("⚠️ حافظهٔ دائم خالی یا در دسترس نیست")
+
 BOT = None
 
 MENU = [
@@ -86,6 +99,20 @@ def src_label():
     if s == "api":
         return "API خودکار"
     return "—"
+
+
+def persist():
+    if not ST.enabled():
+        return
+    obj = {
+        "matches": STATE["matches"],
+        "matches_ts": STATE["matches_ts"],
+        "matches_src": STATE["matches_src"],
+        "dc_confirm": STATE["dc_confirm"],
+        "issues": STATE["issues"],
+    }
+    ok = ST.save_state(obj)
+    log("💾 حافظهٔ دائم ذخیره شد" if ok else "⚠️ ذخیرهٔ حافظهٔ دائم ناموفق")
 
 
 def echo_matches(ms):
@@ -299,6 +326,7 @@ def run_scan():
     issues.sort(key=lambda i: -i["score"])
     STATE["removed"] = removed
     STATE["issues"] = issues[:5]
+    persist()
     return build_report(removed, watch_list, STATE["issues"], unverified)
 
 
@@ -312,6 +340,7 @@ async def do_fetch():
     STATE["matches_ts"] = time.time()
     STATE["matches_src"] = "api"
     STATE["fetch_info"] = info
+    persist()
     msg = (
         f"📥 دریافت شد: {len(matches)} بازی از {info['leagues_ok']} لیگ\n"
         f"🌐 لیست API جایگزین لیست قبلی شد\n"
@@ -354,11 +383,11 @@ async def job_lineup(name):
 
 
 async def job_sell60(name):
-    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۶۰ {name}: بررسی فروش")
+    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۰ {name}: بررسی فروش")
 
 
 async def job_sell75(name):
-    await BOT.send_message(ADMIN_ID, f"💰 دقیقه ۵ {name}: اگر جلو هستی = فروش قطعی")
+    await BOT.send_message(ADMIN_ID, f"💰 دقیقه ۷۵ {name}: اگر جلو هستی = فروش قطعی")
 
 
 # ---------- هندلرها ----------
@@ -366,10 +395,9 @@ async def job_sell75(name):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
-        "نسخه: 10.0 — مغز کامل + دیپ‌چک خودکار\n\n"
-        "۱) دکمهٔ « بازی‌های روز» یا لیست خودت را بفرست\n"
+        "نسخه: 10.0 — مغز کامل + دیپ‌چک خودکار + حافظهٔ دائم\n\n"
+        "۱) دکمهٔ «📥 بازی‌های روز» یا لیست خودت را بفرست\n"
         "۲) دکمهٔ «💎 اسکن روزانه» را بزن\n"
-        "   (دیپ‌چک خودکار برای لیگ‌های سفید اجرا می‌شود)\n"
         "۳) برای فکت مصدومیت: /confirm ردیف"
     )
     await update.message.reply_text(text, reply_markup=KB)
@@ -412,6 +440,7 @@ async def confirm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     key = (m["home"].lower(), m["away"].lower())
     STATE["dc_confirm"][key] = True
+    persist()
     await update.message.reply_text(
         f"🗣 تأیید تو ثبت شد: {m['home']} - {m['away']}\nدر اسکن بعدی، فکت مصدومیت ۳ شاهد خواهد داشت.",
         reply_markup=KB,
@@ -457,6 +486,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "🟢 وضعیت ربات: آنلاین (ابر)\n"
         f"📥 منبع لیست فعلی: {src_label()} | {len(STATE['matches'])} بازی\n"
+        f"💾 حافظهٔ دائم: {'فعال' if ST.enabled() else 'غیرفعال (GITHUB_PAT نیست)'}\n"
         f"📊 سهمیه Odds API: باقی‌مانده {info.get('remaining', '—')}\n"
         f"🧠 دیپ‌چک خودکار: {'فعال' if DCA.enabled() else 'کلید ندارد'}\n"
         f"📡 دیدبان ضریب: {len(STATE['watch'])} ثبت\n"
@@ -514,6 +544,7 @@ def save_matches(ms, text=None, src="manual"):
     STATE["matches_ts"] = time.time()
     STATE["matches_src"] = src
     STATE["csv_text"] = text
+    persist()
 
 
 # ---------- دریافت فایل ----------
