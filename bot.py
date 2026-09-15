@@ -118,10 +118,12 @@ def build_report(removed, watch_list, issues, unverified):
     lines.append("👁 تماشا / بدون شرط:")
     if not watch_list:
         lines.append("• (هیچ)")
-    for m, why in watch_list:
+    for m, why, reasons in watch_list:
         lines.append(
             f"• {m['home']} - {m['away']} | {m['time']} | {m['w1']}/{m['x']}/{m['w2']} | {why}"
         )
+        for r in reasons:
+            lines.append(f"    {r}")
     lines.append("")
     if not issues:
         lines.append("⛔ امروز NO BET — الماس واقعی نیست")
@@ -213,22 +215,22 @@ def run_scan():
         key = (m["home"].lower(), m["away"].lower())
         name = f"{m['home']} - {m['away']}"
         if m["live"]:
-            removed.append((m, "لایو/پیش‌مسابقه = ورود ممنوع"))
+            removed.append((m, "لایو/پیش‌مسابقه = ورود ممنوع", []))
             continue
         reason = FL.league_block_reason(m["league"])
         if reason:
-            removed.append((m, reason))
+            removed.append((m, reason, []))
             continue
         jl = m["league"].lower()
         if any(p in jl for p in JUNK_PATS):
-            removed.append((m, "لیگ دسته‌پایین = ممنوع"))
+            removed.append((m, "لیگ دسته‌پایین = ممنوع", []))
             continue
         if not (m["w1"] and m["x"] and m["w2"]):
-            removed.append((m, "ضرایب ناقص"))
+            removed.append((m, "ضرایب ناقص", []))
             continue
         mg = FL.margin(m["w1"], m["x"], m["w2"])
         if not FL.margin_ok(m["w1"], m["x"], m["w2"]):
-            removed.append((m, f"مارجین بالای ۶٪ ({mg:.1f}٪)"))
+            removed.append((m, f"مارجین بالای ۶٪ ({mg:.1f}٪)", []))
             continue
 
         src_lines = []
@@ -240,22 +242,22 @@ def run_scan():
                 src_lines = lines or []
                 dc_used += 1
             else:
-                watch_list.append((m, f"تأییدنشده = NO BET ({why})"))
+                watch_list.append((m, f"تأییدنشده = NO BET ({why})", []))
                 unverified += 1
                 continue
         if d is None:
-            watch_list.append((m, "داده تأییدشده (DeepCheck) نیست = بدون شرط"))
+            watch_list.append((m, "داده تأییدشده (DeepCheck) نیست = بدون شرط", []))
             unverified += 1
             continue
 
         ok, why = DC.validate(d)
         if not ok:
-            removed.append((m, why))
+            removed.append((m, why, []))
             continue
         if d["side"] in ("home", "away"):
             opp_odd = m["w2"] if d["side"] == "home" else m["w1"]
             if d["odds"] > opp_odd and d["inj_opp"] < 6:
-                removed.append((m, "Win خالص روی underdog ممنوع؛ فقط X2/DNB"))
+                removed.append((m, "Win خالص روی underdog ممنوع؛ فقط X2/DNB", []))
                 continue
         score, reasons = SC.diamond_score(
             inj_opp=d["inj_opp"],
@@ -271,7 +273,7 @@ def run_scan():
         )
         v = SC.verdict(score)
         if v == "NO BET":
-            watch_list.append((m, f"امتیاز {score}/12 — زیر آستانهٔ صدور"))
+            watch_list.append((m, f"امتیاز {score}/12 — زیر آستانهٔ صدور", reasons))
             continue
         OW.record(STATE["watch"], key, d["side"], d["odds"], datetime.now(TZ).timestamp())
         issues.append({
@@ -360,8 +362,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
         "نسخه: 10.0 — مغز کامل + دیپ‌چک خودکار\n\n"
-        "۱) دکمهٔ « بازی‌های روز» یا لیست خودت را بفرست\n"
-        "۲) دکمهٔ « اسکن روزانه» را بزن\n"
+        "۱) دکمهٔ «📥 بازی‌های روز» یا لیست خودت را بفرست\n"
+        "۲) دکمهٔ «💎 اسکن روزانه» را بزن\n"
         "   (دیپ‌چک خودکار برای لیگ‌های سفید اجرا می‌شود)\n"
         "۳) برای فکت مصدومیت: /confirm ردیف"
     )
