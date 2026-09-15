@@ -198,7 +198,7 @@ async def job_lineup(name):
 
 
 async def job_sell60(name):
-    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۰ {name}: بررسی فروش")
+    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۶۰ {name}: بررسی فروش")
 
 
 async def job_sell75(name):
@@ -479,6 +479,10 @@ async def boot(app):
     server = tornado.httpserver.HTTPServer(web)
     server.listen(port)
     log(f"✅ پورت باز شد: {port}")
+
+    await app.initialize()
+    await app.start()
+    log("✅ برنامه مقداردهی اولیه شد (initialize/start)")
 
     await post_init(app)
     log("✅ منوها و زمان‌بند آماده شد")
