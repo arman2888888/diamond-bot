@@ -4,9 +4,9 @@ import csv
 import io
 
 FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
-AR_DIGITS = "٠١٣٤٥٧٨٩"
+AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
 
-# فرهنگ لیگ‌ها برای حالت فاصله‌ای (تماماً کوچک)
+# فرهنگ لیگ‌ها برای حالت فاصله‌ای
 LEAGUE_GAZ = [
     "afc champions league elite", "uefa europa conference league", "uefa champions league",
     "uefa europa league", "england premier league", "england championship",
@@ -27,7 +27,26 @@ LEAGUE_GAZ = [
     "south africa premiership", "morocco botola pro",
 ]
 
-JUNK_HINTS = ["ii"]
+# باشگاه‌هایی که اسمشان یک کلمه است (برای تقسیم درست در حالت شک‌دار)
+SINGLE_CLUBS = {
+    "villarreal", "esteghlal", "persepolis", "arsenal", "chelsea", "barcelona",
+    "juventus", "bayern", "dortmund", "ajax", "psv", "porto", "benfica",
+    "celtic", "rangers", "flamengo", "sevilla", "valencia", "getafe",
+    "osasuna", "levante", "torino", "genoa", "lazio", "napoli", "roma",
+    "atalanta", "udinese", "parma", "como", "inter", "milan", "lyon",
+    "marseille", "monaco", "lille", "nice", "rennes", "nantes", "lens",
+    "reims", "brest", "angers", "metz", "auxerre", "braga", "guimaraes",
+    "boavista", "galatasaray", "fenerbahce", "besiktas", "trabzonspor",
+    "olympiacos", "panathinaikos", "salzburg", "anderlecht", "brugge",
+    "gent", "genk", "legia", "lech", "wisla", "piast", "rakow",
+    "midtjylland", "brondby", "copenhagen", "aarhus", "odense", "malmo",
+    "aik", "hammarby", "djurgarden", "aberdeen", "hearts", "kilmarnock",
+    "motherwell", "livingston", "rustavi", "samgurali", "epicentr",
+    "smouha", "urawa", "kashima", "jeonbuk", "ulsan", "shandong",
+    "gremio", "santos", "corinthians", "cruzeiro", "fluminense",
+    "palmeiras", "nacional", "penarol", "colonia", "tigres", "pumas",
+    "toluca", "pachuca", "monterrey", "atlas", "leon",
+}
 
 
 def to_en_digits(s: str) -> str:
@@ -108,12 +127,27 @@ def _rows_to_csv(rows):
 
 
 def _match_league(mid):
-    """بلندترین پیشوند mid را که لیگ شناخته‌شده است برمی‌گرداند: (نام، تعداد توکن)"""
     for n in range(min(5, len(mid)), 0, -1):
         cand = " ".join(mid[:n]).lower()
         if cand in LEAGUE_GAZ:
             return " ".join(mid[:n]), n
     return None, 0
+
+
+def _split_teams(teams):
+    n = len(teams)
+    if n == 2:
+        return teams[0], teams[1]
+    if n == 3:
+        t0 = teams[0].lower()
+        t2 = teams[2].lower()
+        if t0 in SINGLE_CLUBS:
+            return teams[0], f"{teams[1]} {teams[2]}"
+        if t2 in SINGLE_CLUBS:
+            return f"{teams[0]} {teams[1]}", teams[2]
+        return f"{teams[0]} {teams[1]}", teams[2]
+    h = (n + 1) // 2
+    return " ".join(teams[:h]), " ".join(teams[h:])
 
 
 def _parse_pipe_lines(lines):
@@ -157,9 +191,7 @@ def _parse_space_lines(lines):
         teams = mid[n:] if league else mid
         if len(teams) < 2:
             continue
-        h_n = (len(teams) + 1) // 2
-        home = " ".join(teams[:h_n])
-        away = " ".join(teams[h_n:])
+        home, away = _split_teams(teams)
         row += 1
         matches.append({
             "row": str(row),
@@ -175,7 +207,6 @@ def _parse_space_lines(lines):
 
 
 def parse_any_text(text: str):
-    """هر متنی را می‌گیرد و لیست بازی‌ها را برمی‌گرداند (کاما/تب/فاصله/لوله)"""
     if text.startswith("\ufeff"):
         text = text[1:]
     text = to_en_digits(text)
@@ -194,7 +225,7 @@ def parse_any_text(text: str):
     if "|" in body[0]:
         return _parse_pipe_lines(body)
     if "," in body[0]:
-        return parse_csv_text("\n".join([lines[0]] + body) if start else "\n".join(body))
+        return parse_csv_text("\n".join(body))
     if "\t" in body[0]:
         rows = [ln.split("\t") for ln in body]
         header = lines[0].split("\t") if start else ["ردیف", "تاریخ", "ساعت", "لیگ", "میزبان", "مهمان", "W1", "X", "W2"]
