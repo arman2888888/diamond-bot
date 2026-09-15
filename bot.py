@@ -158,13 +158,17 @@ def fixtures_for(date_str):
     cache = STATE["fixtures_cache"].get(date_str)
     now = time.time()
     if cache and (now - cache["ts"]) < 12 * 3600:
-        return cache["fx"]
+        return cache["fx"], cache.get("err")
     fx, err = DCA.get_fixtures_for_date(date_str)
     if fx is None:
         log(f"⚠️ fixtures {date_str}: {err}")
-        return []
-    STATE["fixtures_cache"][date_str] = {"ts": now, "fx": fx}
-    return fx
+        return [], err
+    if not fx:
+        log(f"⚠️ fixtures {date_str}: {err}")
+        STATE["fixtures_cache"][date_str] = {"ts": now, "fx": [], "err": err}
+        return [], err
+    STATE["fixtures_cache"][date_str] = {"ts": now, "fx": fx, "err": None}
+    return fx, None
 
 
 def auto_deepcheck(m, key):
@@ -173,9 +177,11 @@ def auto_deepcheck(m, key):
     confirmed = STATE["dc_confirm"].get(key, False)
     if cache and (now - cache["ts"]) < 12 * 3600 and cache.get("confirmed") == confirmed:
         return cache.get("dc"), cache.get("lines"), cache.get("why")
-    fx = fixtures_for(m["date"])
+    fx, ferr = fixtures_for(m["date"])
     if not fx:
-        return None, None, "دادهٔ API-Football در دسترس نیست"
+        why = f"دادهٔ API-Football در دسترس نیست ({ferr or '—'})"
+        STATE["dc_cache"][key] = {"ts": now, "dc": None, "lines": None, "why": why, "confirmed": confirmed}
+        return None, None, why
     dc, lines_or_why = DCA.analyze(m, fx, confirmed=confirmed)
     if dc is None:
         STATE["dc_cache"][key] = {"ts": now, "dc": None, "lines": None, "why": lines_or_why, "confirmed": confirmed}
@@ -212,9 +218,6 @@ def run_scan():
         reason = FL.league_block_reason(m["league"])
         if reason:
             removed.append((m, reason))
-            continue
-        if re.search(r"\bII\b", m["home"]) or re.search(r"\bII\b", m["away"]):
-            removed.append((m, "تیم دوم/ذخیره = ممنوع"))
             continue
         jl = m["league"].lower()
         if any(p in jl for p in JUNK_PATS):
@@ -357,8 +360,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
         "نسخه: 10.0 — مغز کامل + دیپ‌چک خودکار\n\n"
-        "۱) دکمهٔ «📥 بازی‌های روز» یا لیست خودت را بفرست\n"
-        "۲) دکمهٔ «💎 اسکن روزانه» را بزن\n"
+        "۱) دکمهٔ « بازی‌های روز» یا لیست خودت را بفرست\n"
+        "۲) دکمهٔ « اسکن روزانه» را بزن\n"
         "   (دیپ‌چک خودکار برای لیگ‌های سفید اجرا می‌شود)\n"
         "۳) برای فکت مصدومیت: /confirm ردیف"
     )
