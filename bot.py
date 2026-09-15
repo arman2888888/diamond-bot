@@ -24,6 +24,7 @@ import filters as FL
 import parser as PR
 import scoring as SC
 import deepcheck as DC
+import deepcheck_auto as DCA
 import ledger as LG
 import odds_watch as OW
 import fetcher as FT
@@ -55,6 +56,9 @@ STATE = {
     "issues": [],
     "removed": [],
     "watch": [],
+    "dc_cache": {},
+    "dc_confirm": {},
+    "fixtures_cache": {},
 }
 BOT = None
 
@@ -71,6 +75,8 @@ JUNK_PATS = [
     "ligue 2", "serie b", "primera federacion", "national league",
     "reserva", "premier league 2",
 ]
+
+DC_DAILY_CAP = 8
 
 
 def src_label():
@@ -102,7 +108,7 @@ def echo_matches(ms):
 
 # ---------- گزارش‌سازی ----------
 
-def build_report(removed, watch_list, issues):
+def build_report(removed, watch_list, issues, unverified):
     lines = ["💎 گزارش اسکن الماس — v10.0", f"📥 منبع لیست: {src_label()}", "", "🚫 حذف‌شده‌ها:"]
     if not removed:
         lines.append("• (هیچ)")
@@ -127,9 +133,14 @@ def build_report(removed, watch_list, issues):
         )
         for r in i["reasons"]:
             lines.append(f"    {r}")
+        for s in i.get("src_lines", []):
+            lines.append(f"    {s}")
     lines.append("")
     lines.append(f"جمع استیک روز: {sum(i['stake'] for i in issues):.1f}٪ از بانک")
     lines.append("پروتکل فروش: دقیقه ۶۰ بررسی | دقیقه ۷۵ اگر جلو = فروش | گل خوردن + فشار = فروش فوری")
+    if unverified:
+        lines.append("")
+        lines.append("📋 بازی‌های تأییدنشده = NO BET تا چک دستی: ترکیب رسمی | مصدومیت‌ها | حرکت ضریب")
     return "\n".join(lines)
 
 
@@ -139,6 +150,38 @@ def match_dt(m):
         return None
     now = datetime.now(TZ)
     return now.replace(hour=int(tm.group(1)), minute=int(tm.group(2)), second=0, microsecond=0)
+
+
+# ---------- دیپ‌چک خودکار ----------
+
+def fixtures_for(date_str):
+    cache = STATE["fixtures_cache"].get(date_str)
+    now = time.time()
+    if cache and (now - cache["ts"]) < 12 * 3600:
+        return cache["fx"]
+    fx, err = DCA.get_fixtures_for_date(date_str)
+    if fx is None:
+        log(f"⚠️ fixtures {date_str}: {err}")
+        return []
+    STATE["fixtures_cache"][date_str] = {"ts": now, "fx": fx}
+    return fx
+
+
+def auto_deepcheck(m, key):
+    cache = STATE["dc_cache"].get(key)
+    now = time.time()
+    confirmed = STATE["dc_confirm"].get(key, False)
+    if cache and (now - cache["ts"]) < 12 * 3600 and cache.get("confirmed") == confirmed:
+        return cache.get("dc"), cache.get("lines"), cache.get("why")
+    fx = fixtures_for(m["date"])
+    if not fx:
+        return None, None, "دادهٔ API-Football در دسترس نیست"
+    dc, lines_or_why = DCA.analyze(m, fx, confirmed=confirmed)
+    if dc is None:
+        STATE["dc_cache"][key] = {"ts": now, "dc": None, "lines": None, "why": lines_or_why, "confirmed": confirmed}
+        return None, None, lines_or_why
+    STATE["dc_cache"][key] = {"ts": now, "dc": dc, "lines": lines_or_why, "why": None, "confirmed": confirmed}
+    return dc, lines_or_why, None
 
 
 # ---------- موتور اسکن ----------
@@ -152,6 +195,8 @@ def run_scan():
     removed = []
     issues = []
     watch_list = []
+    unverified = 0
+    dc_used = 0
     deep_by_key = {}
     for d in STATE["deep"]:
         k = DC.match_key(d)
@@ -182,10 +227,24 @@ def run_scan():
         if not FL.margin_ok(m["w1"], m["x"], m["w2"]):
             removed.append((m, f"مارجین بالای ۶٪ ({mg:.1f}٪)"))
             continue
+
+        src_lines = []
         d = deep_by_key.get(key)
-        if not d:
+        if d is None and DCA.enabled() and FL.is_whitelisted(m["league"]) and dc_used < DC_DAILY_CAP:
+            dc, lines, why = auto_deepcheck(m, key)
+            if dc is not None:
+                d = dc
+                src_lines = lines or []
+                dc_used += 1
+            else:
+                watch_list.append((m, f"تأییدنشده = NO BET ({why})"))
+                unverified += 1
+                continue
+        if d is None:
             watch_list.append((m, "داده تأییدشده (DeepCheck) نیست = بدون شرط"))
+            unverified += 1
             continue
+
         ok, why = DC.validate(d)
         if not ok:
             removed.append((m, why))
@@ -216,7 +275,7 @@ def run_scan():
             "home": m["home"], "away": m["away"], "time": m["time"],
             "label": DC.side_label(d["side"]), "odds": d["odds"],
             "stake": SC.stake_percent(v), "score": score,
-            "verdict": v, "reasons": reasons,
+            "verdict": v, "reasons": reasons, "src_lines": src_lines,
         })
         dt = match_dt(m)
         if dt:
@@ -230,13 +289,12 @@ def run_scan():
     issues.sort(key=lambda i: -i["score"])
     STATE["removed"] = removed
     STATE["issues"] = issues[:5]
-    return build_report(removed, watch_list, STATE["issues"])
+    return build_report(removed, watch_list, STATE["issues"], unverified)
 
 
 # ---------- دریافت خودکار بازی‌ها ----------
 
 async def do_fetch():
-    """همیشه از نو از API می‌گیرد و جایگزین لیست قبلی می‌کند"""
     matches, info = await asyncio.to_thread(FT.fetch_day)
     if info.get("error"):
         return False, f"❌ {info['error']}"
@@ -298,12 +356,11 @@ async def job_sell75(name):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
-        "نسخه: 10.0 — مغز کامل + چهار درب ورودی\n\n"
-        "۱) دکمهٔ «📥 بازی‌های روز» (API خودکار)\n"
-        "   یا فایل/متن CSV یا متن فاصله‌ای یا اکسل xlsx بفرست\n"
-        "   (هر چه بفرستی، هدف اسکن همان است؛ آخرین ورودی برنده)\n"
-        "۲) دیپ‌چک (JSON) را بفرست\n"
-        "۳) دکمهٔ «💎 اسکن روزانه» را بزن"
+        "نسخه: 10.0 — مغز کامل + دیپ‌چک خودکار\n\n"
+        "۱) دکمهٔ «📥 بازی‌های روز» یا لیست خودت را بفرست\n"
+        "۲) دکمهٔ «💎 اسکن روزانه» را بزن\n"
+        "   (دیپ‌چک خودکار برای لیگ‌های سفید اجرا می‌شود)\n"
+        "۳) برای فکت مصدومیت: /confirm ردیف"
     )
     await update.message.reply_text(text, reply_markup=KB)
 
@@ -331,6 +388,24 @@ async def fetch_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def watch_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(OW.summary(STATE["watch"]), reply_markup=KB)
+
+
+async def confirm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("مثال: /confirm 3  (یعنی خودت با ۲ منبع بیرونی مصدومیت‌های ردیف ۳ را تأیید می‌کنی)", reply_markup=KB)
+        return
+    try:
+        idx = int(context.args[0]) - 1
+        m = STATE["matches"][idx]
+    except Exception:
+        await update.message.reply_text("ردیف معتبر نیست.", reply_markup=KB)
+        return
+    key = (m["home"].lower(), m["away"].lower())
+    STATE["dc_confirm"][key] = True
+    await update.message.reply_text(
+        f"🗣 تأیید تو ثبت شد: {m['home']} - {m['away']}\nدر اسکن بعدی، فکت مصدومیت ۳ شاهد خواهد داشت.",
+        reply_markup=KB,
+    )
 
 
 async def slip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -372,8 +447,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "🟢 وضعیت ربات: آنلاین (ابر)\n"
         f"📥 منبع لیست فعلی: {src_label()} | {len(STATE['matches'])} بازی\n"
-        f"📊 سهمیه API: باقی‌مانده {info.get('remaining', '—')}\n"
-        f"🧠 DeepCheck: {len(STATE['deep'])} رکورد\n"
+        f"📊 سهمیه Odds API: باقی‌مانده {info.get('remaining', '—')}\n"
+        f"🧠 دیپ‌چک خودکار: {'فعال' if DCA.enabled() else 'کلید ندارد'}\n"
         f"📡 دیدبان ضریب: {len(STATE['watch'])} ثبت\n"
         f"📒 دفتر: {len(LEDGER['bets'])} ثبت\n"
         "📅 اسکن خودکار: هر روز ۱۰:۰۰ تهران\n"
@@ -513,6 +588,7 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands([
         BotCommand("scan", "اسکن روزانه"),
         BotCommand("fetch", "دریافت خودکار بازی‌های روز"),
+        BotCommand("confirm", "تأیید دستی مصدومیت‌ها: /confirm ردیف"),
         BotCommand("slip", "برگه شرط"),
         BotCommand("ledger", "دفتر نبردها"),
         BotCommand("rules", "قوانین الماس"),
@@ -528,6 +604,7 @@ def build_app():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("fetch", fetch_cmd))
+    app.add_handler(CommandHandler("confirm", confirm_cmd))
     app.add_handler(CommandHandler("slip", slip))
     app.add_handler(CommandHandler("ledger", ledger_cmd))
     app.add_handler(CommandHandler("rules", rules))
