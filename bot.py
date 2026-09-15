@@ -411,7 +411,7 @@ async def boot(app):
     await app.bot.set_webhook(url=f"https://{host}/{TOKEN}")
     log("✅ وب‌هوک ست شد — حالت ابری فعال")
 
-    tornado.ioloop.IOLoop.current().start()
+    await asyncio.Event().wait()
 
 
 def main() -> None:
