@@ -54,6 +54,8 @@ MENU = [
 KB = ReplyKeyboardMarkup(MENU, resize_keyboard=True, is_persistent=True)
 
 
+# ---------- گزارش‌سازی ----------
+
 def build_report(removed, watch_list, issues):
     lines = ["💎 گزارش اسکن الماس — v10.0", "", "🚫 حذف‌شده‌ها:"]
     if not removed:
@@ -90,6 +92,8 @@ def match_dt(m):
     now = datetime.now(TZ)
     return now.replace(hour=int(tm.group(1)), minute=int(tm.group(2)), second=0, microsecond=0)
 
+
+# ---------- موتور اسکن ----------
 
 def run_scan():
     if not STATE["csv_text"]:
@@ -172,6 +176,8 @@ def run_scan():
     return build_report(removed, watch_list, STATE["issues"])
 
 
+# ---------- jobهای زمان‌بندی ----------
+
 async def job_ping():
     host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
     if host:
@@ -199,12 +205,14 @@ async def job_sell75(name):
     await BOT.send_message(ADMIN_ID, f"💰 دقیقه ۷۵ {name}: اگر جلو هستی = فروش قطعی")
 
 
+# ---------- هندلرها ----------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
         "نسخه: 10.0 — مغز کامل\n\n"
-        "۱) فایل CSV روز را بفرست\n"
-        "۲) فایل JSON دیپ‌چک را بفرست\n"
+        "۱) فایل CSV روز را بفرست (یا متنش را پیست کن)\n"
+        "۲) فایل JSON دیپ‌چک را بفرست (یا متنش را پیست کن)\n"
         "۳) دکمهٔ اسکن را بزن"
     )
     await update.message.reply_text(text, reply_markup=KB)
@@ -225,7 +233,7 @@ async def slip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not STATE["issues"]:
         await update.message.reply_text("📌 امروز برگه‌ای صادر نشده. داده نیست = شرط نیست.", reply_markup=KB)
         return
-    lines = ["📌 برگهٔ امروز:"]
+    lines = ["📌 برگه امروز:"]
     for i in STATE["issues"]:
         lines.append(f"• {i['home']} - {i['away']} | {i['label']} | ضریب {i['odds']} | استیک {i['stake']}٪")
     lines.append("")
@@ -308,6 +316,8 @@ HANDLERS = {
 }
 
 
+# ---------- دریافت فایل ----------
+
 async def on_doc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     doc = update.message.document
     f = await doc.get_file()
@@ -326,11 +336,21 @@ async def on_doc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"📂 CSV روز ذخیره شد: {n} بازی خوانده شد. حالا /scan بزن.", reply_markup=KB)
 
 
+# ---------- دریافت متن ----------
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     t = update.message.text or ""
     fn = HANDLERS.get(t)
     if fn:
         await fn(update, context)
+        return
+    if "میزبان" in t and "," in t:
+        STATE["csv_text"] = t
+        n = len(PR.parse_csv_text(t))
+        await update.message.reply_text(
+            f"📂 CSV روز ذخیره شد: {n} بازی خوانده شد. حالا /scan بزن.",
+            reply_markup=KB,
+        )
         return
     if t.strip().startswith("{") or t.strip().startswith("["):
         try:
@@ -339,6 +359,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             await update.message.reply_text(f"❌ JSON نامعتبر: {e}", reply_markup=KB)
 
+
+# ---------- راه‌اندازی ----------
 
 async def post_init(application: Application) -> None:
     global BOT
