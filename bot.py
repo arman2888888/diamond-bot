@@ -198,7 +198,7 @@ async def job_lineup(name):
 
 
 async def job_sell60(name):
-    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۶۰ {name}: بررسی فروش")
+    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۰ {name}: بررسی فروش")
 
 
 async def job_sell75(name):
@@ -413,12 +413,67 @@ async def boot(app):
                 data = json.loads(self.request.body)
                 upd = Update.de_json(data, holder["app"].bot)
                 await holder["app"].process_update(upd)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"❌ خطای هندلر: {e!r}")
             self.write("ok")
+
+    class Diag(tornado.web.RequestHandler):
+        async def get(self):
+            a = holder["app"]
+            if not a:
+                self.write({"error": "booting"})
+                return
+            try:
+                info = await a.bot.get_webhook_info()
+                url = info.url or ""
+                self.write({
+                    "url_ok": url.startswith("https://"),
+                    "url_host": url.split("/")[2] if len(url.split("/")) > 2 else "",
+                    "pending": info.pending_update_count,
+                    "last_error": info.last_error_message,
+                })
+            except Exception as e:
+                self.write({"error": str(e)})
+
+    class FixHook(tornado.web.RequestHandler):
+        async def get(self):
+            a = holder["app"]
+            if not a:
+                self.write({"ok": False, "why": "booting"})
+                return
+            host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
+            try:
+                await a.bot.set_webhook(url=f"https://{host}/{TOKEN}")
+                self.write({"ok": True, "host": host})
+            except Exception as e:
+                self.write({"ok": False, "error": str(e)})
+
+    class Poke(tornado.web.RequestHandler):
+        async def get(self):
+            a = holder["app"]
+            if not a:
+                self.write({"ok": False, "why": "booting"})
+                return
+            try:
+                upd = Update.de_json({
+                    "update_id": 900000001,
+                    "message": {
+                        "message_id": 900000001,
+                        "date": 1757900000,
+                        "chat": {"id": int(ADMIN_ID or 0), "type": "private", "first_name": "Arman"},
+                        "text": "/status",
+                    },
+                }, a.bot)
+                await a.process_update(upd)
+                self.write({"ok": True, "note": "check telegram"})
+            except Exception as e:
+                self.write({"ok": False, "error": str(e)})
 
     web = tornado.web.Application([
         (r"/health", Health),
+        (r"/diag", Diag),
+        (r"/fixhook", FixHook),
+        (r"/poke", Poke),
         (r"/" + TOKEN, Hook),
     ])
     server = tornado.httpserver.HTTPServer(web)
