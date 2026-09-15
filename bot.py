@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,6 +26,7 @@ import scoring as SC
 import deepcheck as DC
 import ledger as LG
 import odds_watch as OW
+import fetcher as FT
 
 
 def log(msg):
@@ -43,12 +45,22 @@ log("✅ دفتر نبردها بارگذاری شد")
 SCHED = AsyncIOScheduler(timezone=TZ)
 log("✅ زمان‌بند ساخته شد")
 
-STATE = {"csv_text": None, "deep": [], "issues": [], "removed": [], "watch": {}}
+STATE = {
+    "csv_text": None,
+    "matches": [],
+    "matches_ts": 0.0,
+    "fetch_info": {},
+    "deep": [],
+    "issues": [],
+    "removed": [],
+    "watch": [],
+}
 BOT = None
 
 MENU = [
     ["💎 اسکن روزانه", "📌 برگه شرط"],
     ["📒 دفتر نبردها", "📊 وضعیت"],
+    ["📥 بازی‌های روز", "📡 دیدبان ضریب"],
     ["📜 قوانین", "🆔 آی‌دی من"],
 ]
 KB = ReplyKeyboardMarkup(MENU, resize_keyboard=True, is_persistent=True)
@@ -96,12 +108,14 @@ def match_dt(m):
 # ---------- موتور اسکن ----------
 
 def run_scan():
-    if not STATE["csv_text"]:
+    matches = STATE.get("matches") or []
+    if not matches and STATE["csv_text"]:
+        matches = PR.parse_csv_text(STATE["csv_text"])
+    if not matches:
         return None
     removed = []
     issues = []
     watch_list = []
-    matches = PR.parse_csv_text(STATE["csv_text"])
     deep_by_key = {}
     for d in STATE["deep"]:
         k = DC.match_key(d)
@@ -176,6 +190,31 @@ def run_scan():
     return build_report(removed, watch_list, STATE["issues"])
 
 
+# ---------- دریافت خودکار بازی‌ها ----------
+
+async def do_fetch(force=False):
+    now = time.time()
+    age = now - STATE["matches_ts"]
+    if not force and STATE["matches"] and age < 12 * 3600:
+        return False, f"📦 لیست امروزAlready داریم: {len(STATE['matches'])} بازی (کمتر از ۱۲ ساعت). برای اجبار: /fetch"
+    matches, info = await asyncio.to_thread(FT.fetch_day)
+    if info.get("error"):
+        return False, f"❌ {info['error']}"
+    STATE["matches"] = matches
+    STATE["matches_ts"] = now
+    STATE["fetch_info"] = info
+    msg = (
+        f"📥 دریافت شد: {len(matches)} بازی از {info['leagues_ok']} لیگ\n"
+        f" سهمیه The Odds API: مصرف {info['used']} | باقی‌مانده {info['remaining']}\n"
+        f"📅 لیگ‌های اضافی امروز: {'بله' if info.get('extra_today') else 'خیر'}"
+    )
+    if info["leagues_err"]:
+        msg += "\n⚠️ خطاها: " + " | ".join(info["leagues_err"][:4])
+    if not matches:
+        msg += "\n(امروز بازی‌ای در پنجرهٔ زمانی لیگ‌های سفید نیست)"
+    return True, msg
+
+
 # ---------- jobهای زمان‌بندی ----------
 
 async def job_ping():
@@ -188,6 +227,12 @@ async def job_ping():
 
 
 async def job_daily_scan():
+    if not STATE["matches"] or (time.time() - STATE["matches_ts"]) > 20 * 3600:
+        matches, info = await asyncio.to_thread(FT.fetch_day)
+        if not info.get("error"):
+            STATE["matches"] = matches
+            STATE["matches_ts"] = time.time()
+            STATE["fetch_info"] = info
     rep = run_scan()
     if rep and ADMIN_ID:
         await BOT.send_message(ADMIN_ID, "⏰ اسکن خودکار ساعت ۱۰:۰۰\n\n" + rep)
@@ -210,10 +255,11 @@ async def job_sell75(name):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
-        "نسخه: 10.0 — مغز کامل\n\n"
-        "۱) فایل CSV روز را بفرست (یا متنش را پیست کن)\n"
-        "۲) فایل JSON دیپ‌چک را بفرست (یا متنش را پیست کن)\n"
-        "۳) دکمهٔ اسکن را بزن"
+        "نسخه: 10.0 — مغز کامل + دریافت خودکار\n\n"
+        "۱) دکمهٔ «📥 بازی‌های روز» را بزن (خودکار از API)\n"
+        "   یا فایل/متن CSV بفرست\n"
+        "۲) دیپ‌چک (JSON یا دکمهٔ آینده) را بفرست\n"
+        "۳) دکمهٔ «💎 اسکن روزانه» را بزن"
     )
     await update.message.reply_text(text, reply_markup=KB)
 
@@ -222,11 +268,25 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     rep = run_scan()
     if rep is None:
         await update.message.reply_text(
-            "📂 اول فایل CSV بازی‌های روز را همین‌جا بفرست (یا متنش را پیست کن).",
+            "📂 لیستی نیست. دکمهٔ «📥 بازی‌های روز» را بزن یا CSV بفرست.",
             reply_markup=KB,
         )
     else:
         await update.message.reply_text(rep, reply_markup=KB)
+
+
+async def fetch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ok, msg = await do_fetch(force=True)
+    await update.message.reply_text(msg, reply_markup=KB)
+
+
+async def fetch_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ok, msg = await do_fetch(force=False)
+    await update.message.reply_text(msg, reply_markup=KB)
+
+
+async def watch_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(OW.summary(STATE["watch"]), reply_markup=KB)
 
 
 async def slip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -264,9 +324,12 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    src = "API خودکار" if STATE["matches"] else ("CSV دستی" if STATE["csv_text"] else "خالی")
+    info = STATE.get("fetch_info") or {}
     text = (
         "🟢 وضعیت ربات: آنلاین (ابر)\n"
-        f"📂 CSV روز: {'دارد' if STATE['csv_text'] else 'ندارد'}\n"
+        f"📥 منبع لیست: {src} | {len(STATE['matches'])} بازی\n"
+        f"📊 سهمیه API: باقی‌مانده {info.get('remaining', '—')}\n"
         f"🧠 DeepCheck: {len(STATE['deep'])} رکورد\n"
         f"📡 دیدبان ضریب: {len(STATE['watch'])} ثبت\n"
         f"📒 دفتر: {len(LEDGER['bets'])} ثبت\n"
@@ -311,6 +374,8 @@ HANDLERS = {
     "📌 برگه شرط": slip,
     "📒 دفتر نبردها": ledger_cmd,
     "📊 وضعیت": status,
+    "📥 بازی‌های روز": fetch_btn,
+    "📡 دیدبان ضریب": watch_btn,
     "📜 قوانین": rules,
     "🆔 آی‌دی من": id_cmd,
 }
@@ -332,8 +397,9 @@ async def on_doc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(f"❌ JSON نامعتبر: {e}", reply_markup=KB)
     else:
         STATE["csv_text"] = text
-        n = len(PR.parse_csv_text(text))
-        await update.message.reply_text(f"📂 CSV روز ذخیره شد: {n} بازی خوانده شد. حالا /scan بزن.", reply_markup=KB)
+        STATE["matches"] = PR.parse_csv_text(text)
+        STATE["matches_ts"] = time.time()
+        await update.message.reply_text(f"📂 CSV روز ذخیره شد: {len(STATE['matches'])} بازی. حالا /scan بزن.", reply_markup=KB)
 
 
 # ---------- دریافت متن ----------
@@ -346,9 +412,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if "میزبان" in t and "," in t:
         STATE["csv_text"] = t
-        n = len(PR.parse_csv_text(t))
+        STATE["matches"] = PR.parse_csv_text(t)
+        STATE["matches_ts"] = time.time()
         await update.message.reply_text(
-            f"📂 CSV روز ذخیره شد: {n} بازی خوانده شد. حالا /scan بزن.",
+            f"📂 CSV روز ذخیره شد: {len(STATE['matches'])} بازی. حالا /scan بزن.",
             reply_markup=KB,
         )
         return
@@ -369,6 +436,7 @@ async def post_init(application: Application) -> None:
         SCHED.start()
     await application.bot.set_my_commands([
         BotCommand("scan", "اسکن روزانه"),
+        BotCommand("fetch", "دریافت خودکار بازی‌های روز"),
         BotCommand("slip", "برگه شرط"),
         BotCommand("ledger", "دفتر نبردها"),
         BotCommand("rules", "قوانین الماس"),
@@ -383,6 +451,7 @@ def build_app():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("fetch", fetch_cmd))
     app.add_handler(CommandHandler("slip", slip))
     app.add_handler(CommandHandler("ledger", ledger_cmd))
     app.add_handler(CommandHandler("rules", rules))
