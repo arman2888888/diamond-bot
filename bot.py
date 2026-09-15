@@ -49,6 +49,7 @@ STATE = {
     "csv_text": None,
     "matches": [],
     "matches_ts": 0.0,
+    "matches_src": "none",
     "fetch_info": {},
     "deep": [],
     "issues": [],
@@ -72,12 +73,27 @@ JUNK_PATS = [
 ]
 
 
+def src_label():
+    s = STATE.get("matches_src", "none")
+    if s == "manual":
+        return "لیست ارسالی تو"
+    if s == "api":
+        return "API خودکار"
+    return "—"
+
+
 def echo_matches(ms):
-    lines = [f"📥 {len(ms)} بازی خوانده شد:"]
-    for m in ms[:6]:
-        lines.append(f"• {m['home']} vs {m['away']} | {m['league']} | {m['time']}")
-    if len(ms) > 6:
-        lines.append(f"... و {len(ms) - 6} بازی دیگر")
+    lines = [f"📥 {len(ms)} بازی خوانده شد (منبع: لیست تو):"]
+    for m in ms[:8]:
+        lines.append(
+            f"• {m['home']} vs {m['away']} | {m['league']} | {m['time']} | "
+            f"{m['w1']} / {m['x']} / {m['w2']}"
+        )
+    if len(ms) > 8:
+        lines.append(f"... و {len(ms) - 8} بازی دیگر")
+    lines.append("")
+    lines.append("🎯 از این به بعد اسکن، همین لیست تو را بررسی می‌کند")
+    lines.append("(تا وقتی «📥 بازی‌های روز» بزنی یا لیست جدید بفرستی)")
     lines.append("")
     lines.append("اگر اسمی به‌هم ریخته، همان خط را با لوله بفرست:")
     lines.append("لیگ | میزبان | مهمان | W1 | X | W2")
@@ -87,7 +103,7 @@ def echo_matches(ms):
 # ---------- گزارش‌سازی ----------
 
 def build_report(removed, watch_list, issues):
-    lines = ["💎 گزارش اسکن الماس — v10.0", "", "🚫 حذف‌شده‌ها:"]
+    lines = ["💎 گزارش اسکن الماس — v10.0", f"📥 منبع لیست: {src_label()}", "", "🚫 حذف‌شده‌ها:"]
     if not removed:
         lines.append("• (هیچ)")
     for m, why in removed:
@@ -97,7 +113,9 @@ def build_report(removed, watch_list, issues):
     if not watch_list:
         lines.append("• (هیچ)")
     for m, why in watch_list:
-        lines.append(f"• {m['home']} - {m['away']} | {why}")
+        lines.append(
+            f"• {m['home']} - {m['away']} | {m['time']} | {m['w1']}/{m['x']}/{m['w2']} | {why}"
+        )
     lines.append("")
     if not issues:
         lines.append("⛔ امروز NO BET — الماس واقعی نیست")
@@ -217,19 +235,18 @@ def run_scan():
 
 # ---------- دریافت خودکار بازی‌ها ----------
 
-async def do_fetch(force=False):
-    now = time.time()
-    age = now - STATE["matches_ts"]
-    if not force and STATE["matches"] and age < 12 * 3600:
-        return False, f"📦 لیست امروز را داریم: {len(STATE['matches'])} بازی (کمتر از ۱۲ ساعت). برای اجبار: /fetch"
+async def do_fetch():
+    """همیشه از نو از API می‌گیرد و جایگزین لیست قبلی می‌کند"""
     matches, info = await asyncio.to_thread(FT.fetch_day)
     if info.get("error"):
         return False, f"❌ {info['error']}"
     STATE["matches"] = matches
-    STATE["matches_ts"] = now
+    STATE["matches_ts"] = time.time()
+    STATE["matches_src"] = "api"
     STATE["fetch_info"] = info
     msg = (
         f"📥 دریافت شد: {len(matches)} بازی از {info['leagues_ok']} لیگ\n"
+        f"🌐 لیست API جایگزین لیست قبلی شد\n"
         f"📊 سهمیه The Odds API: مصرف {info['used']} | باقی‌مانده {info['remaining']}\n"
         f"📅 لیگ‌های اضافی امروز: {'بله' if info.get('extra_today') else 'خیر'}"
     )
@@ -257,6 +274,7 @@ async def job_daily_scan():
         if not info.get("error"):
             STATE["matches"] = matches
             STATE["matches_ts"] = time.time()
+            STATE["matches_src"] = "api"
             STATE["fetch_info"] = info
     rep = run_scan()
     if rep and ADMIN_ID:
@@ -268,7 +286,7 @@ async def job_lineup(name):
 
 
 async def job_sell60(name):
-    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۰ {name}: بررسی فروش")
+    await BOT.send_message(ADMIN_ID, f"🔔 دقیقه ۶۰ {name}: بررسی فروش")
 
 
 async def job_sell75(name):
@@ -281,8 +299,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "💎 ربات الماس فعال شد.\n"
         "نسخه: 10.0 — مغز کامل + چهار درب ورودی\n\n"
-        "۱) دکمهٔ « بازی‌های روز» (API خودکار)\n"
-        "   یا متن/فایل CSV یا متن فاصله‌ای یا اکسل xlsx بفرست\n"
+        "۱) دکمهٔ «📥 بازی‌های روز» (API خودکار)\n"
+        "   یا فایل/متن CSV یا متن فاصله‌ای یا اکسل xlsx بفرست\n"
+        "   (هر چه بفرستی، هدف اسکن همان است؛ آخرین ورودی برنده)\n"
         "۲) دیپ‌چک (JSON) را بفرست\n"
         "۳) دکمهٔ «💎 اسکن روزانه» را بزن"
     )
@@ -301,12 +320,12 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def fetch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    ok, msg = await do_fetch(force=True)
+    ok, msg = await do_fetch()
     await update.message.reply_text(msg, reply_markup=KB)
 
 
 async def fetch_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    ok, msg = await do_fetch(force=False)
+    ok, msg = await do_fetch()
     await update.message.reply_text(msg, reply_markup=KB)
 
 
@@ -349,11 +368,10 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    src = "API خودکار" if STATE["matches"] else ("دستی" if STATE["csv_text"] else "خالی")
     info = STATE.get("fetch_info") or {}
     text = (
         "🟢 وضعیت ربات: آنلاین (ابر)\n"
-        f"📥 منبع لیست: {src} | {len(STATE['matches'])} بازی\n"
+        f"📥 منبع لیست فعلی: {src_label()} | {len(STATE['matches'])} بازی\n"
         f"📊 سهمیه API: باقی‌مانده {info.get('remaining', '—')}\n"
         f"🧠 DeepCheck: {len(STATE['deep'])} رکورد\n"
         f"📡 دیدبان ضریب: {len(STATE['watch'])} ثبت\n"
@@ -406,9 +424,10 @@ HANDLERS = {
 }
 
 
-def save_matches(ms, text=None):
+def save_matches(ms, text=None, src="manual"):
     STATE["matches"] = ms
     STATE["matches_ts"] = time.time()
+    STATE["matches_src"] = src
     STATE["csv_text"] = text
 
 
@@ -425,7 +444,7 @@ async def on_doc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             ms = PR.matches_from_excel(raw)
             if not ms:
-                await update.message.reply_text("❌ اکسل خواند شد ولی بازی معتبر نداشت.", reply_markup=KB)
+                await update.message.reply_text("❌ اکسل خوانده شد ولی بازی معتبر نداشت.", reply_markup=KB)
                 return
             save_matches(ms)
             await update.message.reply_text(echo_matches(ms), reply_markup=KB)
@@ -448,7 +467,7 @@ async def on_doc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         save_matches(ms, text)
         await update.message.reply_text(echo_matches(ms), reply_markup=KB)
     else:
-        await update.message.reply_text("❌ فایل خواند شد ولی بازی معتبر پیدا نشد.", reply_markup=KB)
+        await update.message.reply_text("❌ فایل خوانده شد ولی بازی معتبر پیدا نشد.", reply_markup=KB)
 
 
 # ---------- دریافت متن ----------
@@ -467,7 +486,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 keys = {(m["home"].lower(), m["away"].lower()) for m in ms}
                 merged = [m for m in old if (m["home"].lower(), m["away"].lower()) not in keys]
                 merged += ms
-                save_matches(merged, None)
+                save_matches(merged, None, STATE.get("matches_src", "manual"))
                 await update.message.reply_text(
                     f"🔧 {len(ms)} خط اصلاح/اضافه شد؛ مجموع لیست: {len(merged)} بازی",
                     reply_markup=KB,
