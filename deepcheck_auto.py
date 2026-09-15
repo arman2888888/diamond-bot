@@ -1,4 +1,4 @@
-# deepcheck_auto.py — دیپ‌چک خودکار با API-Football (مصدومیت/فرم/استراحت)
+# deepcheck_auto.py — دیپ‌چک خودکار با API-Football (نسخهٔ شفاف: هر خطا ثبت می‌شود)
 
 import os
 import re
@@ -10,7 +10,11 @@ BASE = "https://v3.football.api-sports.io"
 
 
 def _headers():
-    return {"x-apisports-key": os.getenv("APIFOOTBALL_KEY", "")}
+    key = os.getenv("APIFOOTBALL_KEY", "")
+    return {
+        "x-apisports-key": key,
+        "x-rapidapi-key": key,
+    }
 
 
 def enabled():
@@ -37,11 +41,15 @@ def _similar(a, b):
 
 
 def get_fixtures_for_date(date_str):
+    """برمی‌گرداند: (fixtures, err) — حتی پاسخ خالی هم err دارد"""
     try:
         r = requests.get(f"{BASE}/fixtures", params={"date": date_str}, headers=_headers(), timeout=25)
         if r.status_code != 200:
-            return None, r.status_code
-        return r.json().get("response", []), None
+            return None, f"HTTP {r.status_code}: {r.text[:150]}"
+        fx = r.json().get("response", []) or []
+        if not fx:
+            return [], f"empty(200) برای {date_str}"
+        return fx, None
     except Exception as e:
         return None, repr(e)
 
@@ -60,7 +68,7 @@ def injuries_by_team(fixture_id):
     try:
         r = requests.get(f"{BASE}/injuries", params={"fixture": fixture_id}, headers=_headers(), timeout=25)
         if r.status_code != 200:
-            return None, r.status_code
+            return None, f"HTTP {r.status_code}: {r.text[:150]}"
         counts = {}
         for item in r.json().get("response", []):
             name = ((item.get("team") or {}).get("name")) or "?"
@@ -74,7 +82,7 @@ def form_last5(team_id):
     try:
         r = requests.get(f"{BASE}/fixtures", params={"team": team_id, "last": 5}, headers=_headers(), timeout=25)
         if r.status_code != 200:
-            return None, r.status_code
+            return None, f"HTTP {r.status_code}"
         out = []
         for f in r.json().get("response", []):
             teams = f.get("teams") or {}
@@ -107,7 +115,6 @@ def _gap(form, match_iso):
 
 
 def analyze(match, fixtures, confirmed=False):
-    """برمی‌گرداند: (dc_record, src_lines) یا (None, دلیل)"""
     if not enabled():
         return None, "کلید API-Football تنظیم نشده"
     f = find_fixture(fixtures, match["home"], match["away"])
