@@ -26,13 +26,24 @@ import deepcheck as DC
 import ledger as LG
 import odds_watch as OW
 
+
+def log(msg):
+    print(msg, flush=True)
+
+
+log("✅ وارد کردن ماژول‌ها تمام شد")
+
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_CHAT_ID", "")
 TZ = ZoneInfo("Asia/Tehran")
 
-STATE = {"csv_text": None, "deep": [], "issues": [], "removed": [], "watch": {}}
 LEDGER = LG.load_ledger()
+log("✅ دفتر نبردها بارگذاری شد")
+
 SCHED = AsyncIOScheduler(timezone=TZ)
+log("✅ زمان‌بند ساخته شد")
+
+STATE = {"csv_text": None, "deep": [], "issues": [], "removed": [], "watch": {}}
 BOT = None
 
 MENU = [
@@ -42,8 +53,6 @@ MENU = [
 ]
 KB = ReplyKeyboardMarkup(MENU, resize_keyboard=True, is_persistent=True)
 
-
-# ---------- گزارش‌سازی ----------
 
 def build_report(removed, watch_list, issues):
     lines = ["💎 گزارش اسکن الماس — v10.0", "", "🚫 حذف‌شده‌ها:"]
@@ -81,8 +90,6 @@ def match_dt(m):
     now = datetime.now(TZ)
     return now.replace(hour=int(tm.group(1)), minute=int(tm.group(2)), second=0, microsecond=0)
 
-
-# ---------- موتور اسکن ----------
 
 def run_scan():
     if not STATE["csv_text"]:
@@ -165,8 +172,6 @@ def run_scan():
     return build_report(removed, watch_list, STATE["issues"])
 
 
-# ---------- jobهای زمان‌بندی ----------
-
 async def job_ping():
     host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
     if host:
@@ -193,8 +198,6 @@ async def job_sell60(name):
 async def job_sell75(name):
     await BOT.send_message(ADMIN_ID, f"💰 دقیقه ۷۵ {name}: اگر جلو هستی = فروش قطعی")
 
-
-# ---------- هندلرها ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
@@ -370,8 +373,9 @@ def build_app():
     return app
 
 
-async def cloud(app):
-    from telegram import Update as TU
+async def boot(app):
+    port = int(os.getenv("PORT", "10000"))
+    holder = {"app": None}
 
     class Health(tornado.web.RequestHandler):
         def get(self):
@@ -379,10 +383,14 @@ async def cloud(app):
 
     class Hook(tornado.web.RequestHandler):
         async def post(self):
+            if not holder["app"]:
+                self.set_status(503)
+                self.write("booting")
+                return
             try:
                 data = json.loads(self.request.body)
-                upd = TU.de_json(data, app.bot)
-                await app.process_update(upd)
+                upd = Update.de_json(data, holder["app"].bot)
+                await holder["app"].process_update(upd)
             except Exception:
                 pass
             self.write("ok")
@@ -392,26 +400,29 @@ async def cloud(app):
         (r"/" + TOKEN, Hook),
     ])
     server = tornado.httpserver.HTTPServer(web)
-    server.listen(int(os.getenv("PORT", "10000")))
+    server.listen(port)
+    log(f"✅ پورت باز شد: {port}")
+
+    await post_init(app)
+    log("✅ منوها و زمان‌بند آماده شد")
+
+    holder["app"] = app
     host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
     await app.bot.set_webhook(url=f"https://{host}/{TOKEN}")
-    print("✅ حالت ابری (webhook + /health) فعال شد.")
+    log("✅ وب‌هوک ست شد — حالت ابری فعال")
+
     tornado.ioloop.IOLoop.current().start()
 
 
 def main() -> None:
-    print("در حال شروع ربات...")
+    log("در حال شروع ربات...")
     app = build_app()
     SCHED.add_job(job_ping, "interval", minutes=10)
     SCHED.add_job(job_daily_scan, "cron", hour=10, minute=0)
     if os.getenv("PORT"):
-        async def boot():
-            await app.initialize()
-            await app.start()
-            await cloud(app)
-        asyncio.run(boot())
+        asyncio.run(boot(app))
     else:
-        print("✅ حالت محلی (polling).")
+        log("✅ حالت محلی (polling).")
         app.run_polling()
 
 
