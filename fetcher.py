@@ -1,5 +1,5 @@
 # fetcher.py — گرفتن خودکار بازی‌ها + ضرایب امروز (The Odds API)
-# سهمیه: پلن رایگان ۵۰۰ درخواست/ماه → لیگ‌های هسته هر روز + لیگ‌های اضافی یک روز در میان
+# کلید لیگ‌ها به‌صورت پویا از /sports گرفته می‌شود (رایگان، بدون مصرف سهمیه)
 
 import os
 from datetime import datetime, timedelta
@@ -8,30 +8,29 @@ from zoneinfo import ZoneInfo
 import requests
 
 TZ = ZoneInfo("Asia/Tehran")
-BASE = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
+SPORTS_URL = "https://api.the-odds-api.com/v4/sports/"
+ODDS_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 
-CORE = {
-    "soccer_epl": "England Premier League",
-    "soccer_spain_la_liga": "Spain La Liga",
-    "soccer_italy_serie_a": "Italy Serie A",
-    "soccer_germany_bundesliga": "Germany Bundesliga",
-    "soccer_france_ligue_one": "France Ligue 1",
-    "soccer_netherlands_eredivisie": "Netherlands Eredivisie",
-    "soccer_portugal_primeira_liga": "Portugal Primeira Liga",
-    "soccer_turkey_super_lig": "Turkey Süper Lig",
-    "soccer_scotland_premiership": "Scotland Premiership",
-    "soccer_uefa_champs_league": "UEFA Champions League",
-    "soccer_uefa_europa_league": "UEFA Europa League",
-    "soccer_uefa_europa_conference_league": "UEFA Conference League",
-}
-
-EXTRA = {
-    "soccer_belgium_first_div": "Belgium Pro League",
-    "soccer_sweden_allsvenskan": "Sweden Allsvenskan",
-    "soccer_norway_eliteserien": "Norway Eliteserien",
-    "soccer_denmark_superliga": "Denmark Superliga",
-    "soccer_poland_ekstraklasa": "Poland Ekstraklasa",
-}
+# (الگوی عنوان، عنوان ممنوع، هسته؟، نام نمایشی)
+LEAGUE_PATTERNS = [
+    ("EPL", None, True, "England Premier League"),
+    ("La Liga", None, True, "Spain La Liga"),
+    ("Serie A", None, True, "Italy Serie A"),
+    ("Bundesliga", "Bundesliga 2", True, "Germany Bundesliga"),
+    ("Ligue 1", None, True, "France Ligue 1"),
+    ("Eredivisie", None, True, "Netherlands Eredivisie"),
+    ("Primeira Liga", None, True, "Portugal Primeira Liga"),
+    ("Super Lig", None, True, "Turkey Süper Lig"),
+    ("Scotland", None, True, "Scotland Premiership"),
+    ("Champions League", None, True, "UEFA Champions League"),
+    ("Europa League", "Conference", True, "UEFA Europa League"),
+    ("Conference League", None, True, "UEFA Conference League"),
+    ("Belgium", None, False, "Belgium Pro League"),
+    ("Allsvenskan", None, False, "Sweden Allsvenskan"),
+    ("Eliteserien", None, False, "Norway Eliteserien"),
+    ("Superliga", None, False, "Denmark Superliga"),
+    ("Ekstraklasa", None, False, "Poland Ekstraklasa"),
+]
 
 PREFERRED_BOOKS = ["pinnacle", "bet365", "betfair", "unibet", "williamhill"]
 
@@ -79,24 +78,60 @@ def _in_window(commence_iso):
     return False, dt
 
 
+def _resolve_leagues(api):
+    """لیگ‌های فعال امروز را از /sports رایگان پیدا می‌کند"""
+    try:
+        r = requests.get(SPORTS_URL, params={"apiKey": api}, timeout=25)
+        if r.status_code != 200:
+            return [], [f"sports: {r.status_code}"]
+        sports = r.json()
+    except Exception as e:
+        return [], [f"sports: {e!r}"]
+
+    resolved = []
+    errs = []
+    for pat, exclude, core, name in LEAGUE_PATTERNS:
+        found = None
+        for s in sports:
+            title = f"{s.get('title', '')} {s.get('group', '')}".lower()
+            if pat.lower() in title and (exclude is None or exclude.lower() not in title):
+                if s.get("active", True):
+                    found = s.get("key")
+                    break
+        if found:
+            resolved.append((found, core, name))
+        else:
+            errs.append(f"{name}: فعال/پیدا نشد")
+    return resolved, errs
+
+
 def fetch_day():
     """برمی‌گرداند: (matches, info)"""
     api = os.getenv("ODDS_API_KEY", "")
     if not api:
         return [], {"error": "ODDS_API_KEY تنظیم نشده"}
 
-    leagues = dict(CORE)
+    resolved, errs = _resolve_leagues(api)
+    if not resolved:
+        return [], {"error": "هیچ لیگ فعالی پیدا نشد", "leagues_err": errs}
+
+    leagues = [(k, n) for (k, c, n) in resolved if c]
     if datetime.now(TZ).day % 2 == 0:
-        leagues.update(EXTRA)
+        leagues += [(k, n) for (k, c, n) in resolved if not c]
 
     matches = []
-    info = {"leagues_ok": 0, "leagues_err": [], "used": None, "remaining": None,
-            "extra_today": len(leagues) > len(CORE)}
+    info = {
+        "leagues_ok": 0,
+        "leagues_err": errs,
+        "used": None,
+        "remaining": None,
+        "extra_today": any(not c for (k, c, n) in resolved) and datetime.now(TZ).day % 2 == 0,
+    }
     row = 0
-    for key, league in leagues.items():
+    for key, league in leagues:
         try:
             r = requests.get(
-                BASE.format(key=key),
+                ODDS_URL.format(key=key),
                 params={
                     "apiKey": api,
                     "regions": "eu",
