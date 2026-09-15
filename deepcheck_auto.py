@@ -1,4 +1,4 @@
-# deepcheck_auto.py — دیپ‌چک خودکار با API-Football (نسخهٔ شفاف: هر خطا ثبت می‌شود)
+# deepcheck_auto.py — دیپ‌چک خودکار با API-Football (نسخهٔ ۳: ثبت بدنهٔ پاسخ خالی)
 
 import os
 import re
@@ -41,14 +41,15 @@ def _similar(a, b):
 
 
 def get_fixtures_for_date(date_str):
-    """برمی‌گرداند: (fixtures, err) — حتی پاسخ خالی هم err دارد"""
+    """برمی‌گرداند: (fixtures, err) — بدنهٔ پاسخ خالی هم ثبت می‌شود"""
     try:
         r = requests.get(f"{BASE}/fixtures", params={"date": date_str}, headers=_headers(), timeout=25)
         if r.status_code != 200:
-            return None, f"HTTP {r.status_code}: {r.text[:150]}"
-        fx = r.json().get("response", []) or []
+            return None, f"HTTP {r.status_code}: {r.text[:250]}"
+        body = r.json()
+        fx = body.get("response", []) or []
         if not fx:
-            return [], f"empty(200) برای {date_str}"
+            return [], f"empty(200): {r.text[:250]}"
         return fx, None
     except Exception as e:
         return None, repr(e)
@@ -58,7 +59,7 @@ def find_fixture(fixtures, home, away):
     for f in fixtures:
         t = f.get("teams") or {}
         h = (t.get("home") or {}).get("name")
-        a = (t.get("away") or {}).get("name")
+        a = (f.get("teams") or {}).get("away", {}).get("name") if False else (t.get("away") or {}).get("name")
         if _similar(h, home) and _similar(a, away):
             return f
     return None
@@ -185,7 +186,7 @@ def analyze(match, fixtures, confirmed=False):
     src_lines = [
         f"🩺 API-Football /injuries: غایبان حریف = {inj_opp} | غایبان ما = {inj_us}",
         f"📈 فرم ما: {''.join(r['res'] for r in form_us[-5:]) or '—'} | فرم حریف: {''.join(r['res'] for r in form_opp[-5:]) or '—'}",
-        f"😮‍💨 استراحت: ما {rest_us} روز | حریف {rest_opp} روز",
+        f"😮‍ استراحت: ما {rest_us} روز | حریف {rest_opp} روز",
         f"🗣 تأیید تو (۲ منبع بیرونی): {'✅ ثبت شده' if confirmed else '❌ هنوز — دستور /confirm ردیف'}",
     ]
 
